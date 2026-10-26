@@ -4191,6 +4191,7 @@ void CellArea::createCellMenu(QMenu &menu, bool isCellSelected, TXshCell cell,
     menu.addAction(cmdManager->getAction(MI_Insert));
     if (!soundTextCellsSelected) {
       menu.addAction(cmdManager->getAction(MI_CreateBlankDrawing));
+      menu.addAction(cmdManager->getAction(MI_InsertBlankDrawing));
       menu.addAction(cmdManager->getAction(MI_Duplicate));
     }
     menu.addSeparator();
@@ -4258,6 +4259,7 @@ void CellArea::createCellMenu(QMenu &menu, bool isCellSelected, TXshCell cell,
 
   } else {
     menu.addAction(cmdManager->getAction(MI_CreateBlankDrawing));
+    menu.addAction(cmdManager->getAction(MI_InsertBlankDrawing));
     menu.addSeparator();
     menu.addAction(cmdManager->getAction(MI_FillEmptyCell));
     if (cameraCellsSelected) {

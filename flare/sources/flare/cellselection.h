@@ -129,6 +129,7 @@ public:
 
   void createBlankDrawing(int row, int col, bool inRange);
   void createBlankDrawings();
+  void insertBlankDrawing();
   void fillEmptyCell();
   int getResizePivotRow() const { return m_resizePivotRow; }
 };

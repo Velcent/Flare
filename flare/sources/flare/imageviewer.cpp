@@ -1,6 +1,8 @@
 
 
 #include "imageviewer.h"
+#include "viewerdraw.h"
+#include "flare/cameraguide.h"
 
 // Tnz6 includes
 #include "tapp.h"
@@ -9,8 +11,6 @@
 #include "histogrampopup.h"
 #include "sceneviewer.h"  // ToggleCommandHandler
 #include "mainwindow.h"   //RecentFiles
-#include "layoutUtils.h"
-#include "tapp.h"
 
 // TnzTools includes
 #include "tools/toolcommandids.h"
@@ -23,7 +23,6 @@
 #include "flareqt/viewcommandids.h"
 #include "flareqt/imageutils.h"
 #include "flareqt/lutcalibrator.h"
-#include "flareqt/camerasettingswidget.h"
 
 // TnzLib includes
 #include "flare/tscenehandle.h"
@@ -32,9 +31,6 @@
 #include "flare/palettecontroller.h"
 #include "flare/tpalettehandle.h"
 #include "flare/preferences.h"
-#include "flare/tcamera.h"
-#include "flare/stage.h"
-#include "flare/stagevisitor.h"
 
 // TnzCore includes
 #include "tgl.h"
@@ -49,7 +45,11 @@
 
 //===================================================================================
 
-extern ToggleCommandHandler layoutGuideToggle;
+extern ToggleCommandHandler safeAreaToggle;
+extern ToggleCommandHandler centerCutGuideToggle;
+extern void getSafeAreaData(double &_smallSize, double &_largeSize);
+// enable to choose safe area from a list, and enable to draw multiple lines
+extern void getSafeAreaSizeList(QList<QList<double>> &_sizeList);
 
 //===================================================================================
 
@@ -58,13 +58,38 @@ extern ToggleCommandHandler layoutGuideToggle;
 //------------------------------
 
 namespace {
-TPointD getCameraDpi() {
-  return TApp::instance()
-      ->getCurrentScene()
-      ->getScene()
-      ->getCurrentCamera()
-      ->getDpi();
+// enable to choose safe area from a list, and enable to draw multiple lines
+void drawSafeArea(const TRectD box) {
+  glPushMatrix();
+  glLoadIdentity();
+
+  tglColor(TPixel32::Red);
+  glLineStipple(1, 0xCCCC);
+  glEnable(GL_LINE_STIPPLE);
+
+  tglDrawRect(box);
+
+  QList<QList<double>> sizeList;
+
+  getSafeAreaSizeList(sizeList);
+
+  for (int i = 0; i < sizeList.size(); i++) {
+    QList<double> curSize = sizeList.at(i);
+    if (curSize.size() == 5)
+      tglColor(
+          TPixel((int)curSize.at(2), (int)curSize.at(3), (int)curSize.at(4)));
+    else
+      tglColor(TPixel32::Red);
+
+    double facX = -0.5 * (1 - curSize.at(0) / 100.0);
+    double facY = -0.5 * (1 - curSize.at(1) / 100.0);
+    tglDrawRect(box.enlarge(facX * box.getLx(), facY * box.getLy()));
+  }
+
+  glDisable(GL_LINE_STIPPLE);
+  glPopMatrix();
 }
+
 //-----------------------------------------------------------------------------
 
 inline TRect getImageBounds(const TImageP &img) {
@@ -286,6 +311,8 @@ void ImageViewer::contextMenuEvent(QContextMenuEvent *event) {
 
     menu->addSeparator();
   }
+
+  menu->addAction(CommandManager::instance()->getAction(MI_CenterCutGuide));
 
   QAction *reset = menu->addAction(tr("Reset View"));
   reset->setShortcut(
@@ -554,7 +581,7 @@ void ImageViewer::paintGL() {
     return;
   }
 
-  if (layoutGuideToggle.getStatus() && !m_isColorModel) {
+  if (safeAreaToggle.getStatus() && !m_isColorModel) {
     TRasterImageP rimg = (TRasterImageP)m_image;
     TVectorImageP vimg = (TVectorImageP)m_image;
     TToonzImageP timg  = (TToonzImageP)m_image;
@@ -571,9 +598,41 @@ void ImageViewer::paintGL() {
     }
 
     if (!vimg) {
-      drawLayoutGuide(centerD, bounds);
+      TAffine aff = TTranslation(viewerSize.lx * 0.5, viewerSize.ly * 0.5) *
+                    m_viewAff * TTranslation(-centerD);
+      TRectD bbox = aff * TRectD(0, 0, bounds.getLx() - 1, bounds.getLy() - 1);
+      drawSafeArea(bbox);
     }
   }
+  if (centerCutGuideToggle.getStatus() && !m_isColorModel) {
+    TRasterImageP ri = m_image;
+    TToonzImageP ti  = m_image;
+    if (ri || ti) {
+      const TDimension size =
+          imageSize.lx > 0 && imageSize.ly > 0
+              ? imageSize
+              : (ri ? ri->getRaster()->getSize() : ti->getRaster()->getSize());
+      TPointD dpi;
+      if (ri)
+        ri->getDpi(dpi.x, dpi.y);
+      else
+        ti->getDpi(dpi.x, dpi.y);
+      // Images without valid DPI are interpreted as square pixels.
+      if (!std::isfinite(dpi.x) || !std::isfinite(dpi.y) || dpi.x <= 0.0 ||
+          dpi.y <= 0.0)
+        dpi = TPointD(1.0, 1.0);
+      const TRectD physicalFrame(-0.5 * size.lx / dpi.x, -0.5 * size.ly / dpi.y,
+                                 0.5 * size.lx / dpi.x, 0.5 * size.ly / dpi.y);
+      const TRectD guide = CameraGuide::centeredRect(physicalFrame, 4.0 / 3.0);
+      glPushMatrix();
+      glLoadIdentity();
+      tglMultMatrix(TTranslation(viewerSize.lx * 0.5, viewerSize.ly * 0.5) *
+                    m_viewAff * TScale(dpi.x, dpi.y));
+      ViewerDraw::drawCameraGuide(guide);
+      glPopMatrix();
+    }
+  }
+
   TPoint fromPos, toPos;
 
   if (m_visualSettings.m_defineLoadbox && m_flipbook) {
@@ -635,64 +694,6 @@ void ImageViewer::paintGL() {
       currentInstant = m_timer->nsecsElapsed();
     }
   }
-}
-
-void ImageViewer::drawLayoutGuide(TPointD centerD, TRect bounds) {
-  QList<QList<double>> sizeList;
-  TXshSimpleLevelP sl = nullptr;
-  TPointD offset;
-  TDimension viewerSize(width(), height());
-
-  layoutUtils::getLayoutPreset(sizeList, sl, offset);
-
-  if (sl) {
-    ImagePainter::VisualSettings vs;
-    bool isVector = sl->getType() == TXshLevelType::PLI_XSHLEVEL;
-    TRect clipRect(0, 0, width(), height());
-
-    Stage::RasterPainter painter(viewerSize, m_viewAff, clipRect, vs, false);
-
-    Stage::Player player;
-    player.m_sl  = sl.getPointer();
-    player.m_fid = sl->getFirstFid();
-    if (isVector)
-      player.m_xsh =
-          TApp::instance()->getCurrentScene()->getScene()->getXsheet();
-
-    painter.onImage(player);
-    painter.flushRasterImages();
-  }
-
-  glPushMatrix();
-  glLoadIdentity();
-
-  tglColor(TPixel32::Red);
-  glLineStipple(1, 0xCCCC);
-  glEnable(GL_LINE_STIPPLE);
-
-  TAffine aff = TTranslation(viewerSize.lx * 0.5, viewerSize.ly * 0.5) *
-                m_viewAff * TTranslation(-centerD);
-  // Use exclusive bounds
-  TRectD bbox = aff * TRectD(0, 0, bounds.getLx(), bounds.getLy());
-
-  // Draw Image/Camera Bounds
-  tglDrawRect(bbox);
-
-  for (int i = 0; i < sizeList.size(); i++) {
-    QList<double> curSize = sizeList.at(i);
-    if (curSize.size() == 5)
-      tglColor(
-          TPixel((int)curSize.at(2), (int)curSize.at(3), (int)curSize.at(4)));
-    else
-      tglColor(TPixel32::Red);
-
-    double facX = -0.5 * (1 - curSize.at(0) / 100.0);
-    double facY = -0.5 * (1 - curSize.at(1) / 100.0);
-    tglDrawRect(bbox.enlarge(facX * bbox.getLx(), facY * bbox.getLy()));
-  }
-
-  glDisable(GL_LINE_STIPPLE);
-  glPopMatrix();
 }
 
 //------------------------------------------------------------------------------
@@ -1725,4 +1726,3 @@ public:
     RecentFiles::instance()->clearRecentFilesList(RecentFiles::Flip);
   }
 } clearRecentFlipbookImagesCommandHandler;
-

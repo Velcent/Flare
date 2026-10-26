@@ -26,8 +26,6 @@
 #include "levelcommand.h"
 #include "columncommand.h"
 #include "tstreamexception.h"
-#include "../flarelib/flashhandoff.h"
-#include "../flarelib/flashbundle.h"
 
 // TnzTools includes
 #include "tools/toolhandle.h"
@@ -93,9 +91,6 @@
 #include <QByteArray>
 #include <QClipboard>
 #include <QDirIterator>
-#include <QElapsedTimer>
-#include <QEventLoop>
-#include <QProgressDialog>
 
 // boost includes
 #include <boost/optional.hpp>
@@ -1240,8 +1235,7 @@ inline TPaletteP dirtyWhite(const TPaletteP &plt) {
 // IoCmd::saveSceneIfNeeded(message)
 //---------------------------------------------------------------------------
 
-namespace {
-bool saveSceneIfNeededImpl(QString msg, bool clearSceneOnSuccess) {
+bool IoCmd::saveSceneIfNeeded(QString msg) {
   TApp *app = TApp::instance();
 
   if (app->getCurrentScene()->getDirtyFlag()) {
@@ -1273,6 +1267,10 @@ bool saveSceneIfNeededImpl(QString msg, bool clearSceneOnSuccess) {
       SceneResources resources(scene, 0);
       resources.getDirtyResources(dirtyResources);
     }
+    if (FullColorPalette::instance()->getDirtyFlag()) {
+      dirtyResources << QStringLiteral("Raster Drawing Palette.tpl");
+      dirtyResources.removeDuplicates();
+    }
 
     if (!dirtyResources.empty()) {
       // show up to 5 items
@@ -1300,31 +1298,23 @@ bool saveSceneIfNeededImpl(QString msg, bool clearSceneOnSuccess) {
         return false;
       } else if (ret == 1) {
         // save non scene files
-        const bool saved = IoCmd::saveNonSceneFiles();
-        if (!saved && !clearSceneOnSuccess) return false;
+        if (!IoCmd::saveNonSceneFiles()) return false;
       } else if (ret == 2) {
         // do nothing and continue
       }
     }
 
-    if (clearSceneOnSuccess) {
-      RenderingSuspender suspender;
+    RenderingSuspender suspender;
 
-      TFilePath scenePath(scene->getScenePath());
-      scene->clear();  // note: this (possibly) removes the "untitled" folder
-      app->getCurrentScene()->notifyCastChange();
-      // Si deve notificare anche il cambiamento che ha subito l'xsheet.
-      app->getCurrentXsheet()->notifyXsheetSwitched();
-      FileBrowser::refreshFolder(scenePath.getParentDir());
-    }
+    TFilePath scenePath(scene->getScenePath());
+    scene->clear();  // note: this (possibly) removes the "untitled" folder
+    app->getCurrentScene()->notifyCastChange();
+    // Si deve notificare anche il cambiamento che ha subito l'xsheet.
+    app->getCurrentXsheet()->notifyXsheetSwitched();
+    FileBrowser::refreshFolder(scenePath.getParentDir());
   }
-  if (clearSceneOnSuccess) app->getCurrentScene()->setDirtyFlag(false);
+  app->getCurrentScene()->setDirtyFlag(false);
   return true;
-}
-}  // namespace
-
-bool IoCmd::saveSceneIfNeeded(QString msg) {
-  return saveSceneIfNeededImpl(msg, true);
 }
 
 //===========================================================================
@@ -1341,6 +1331,9 @@ void IoCmd::newScene() {
   // temporary clear the current level to prevent UI to access deleted level
   // while switching scenes
   app->getCurrentLevel()->setLevel(nullptr);
+
+  // An empty raster column can have a palette without a current level.
+  app->getPaletteController()->getCurrentLevelPalette()->setPalette(nullptr);
 
   IconGenerator::instance()->clearRequests();
   IconGenerator::instance()->clearSceneIcons();
@@ -1476,12 +1469,6 @@ bool IoCmd::saveScene(const TFilePath &path, int flags) {
   }
 
   ToonzScene *scene = TApp::instance()->getCurrentScene()->getScene();
-  // Save As of a Flash-imported scene relocates only its imported drawings;
-  // everything else follows the standard Save As below.
-  const bool flashSaveAsCandidate =
-      !saveSubxsheet && !isAutosave &&
-      scene->decodeFilePath(scene->getScenePath()) !=
-          scene->decodeFilePath(scenePath);
 
   TXsheet *xsheet = 0;
   if (saveSubxsheet) xsheet = TApp::instance()->getCurrentXsheet()->getXsheet();
@@ -1521,16 +1508,9 @@ bool IoCmd::saveScene(const TFilePath &path, int flags) {
     }
   };
 
-  std::set<TXshLevel *> flashRelocatedLevels;
-  if (flashSaveAsCandidate)
-    for (auto *level : FlashNative::portableSaveAsLevels(*scene))
-      flashRelocatedLevels.insert(level);
-  const bool portableFlashSaveAs = !flashRelocatedLevels.empty();
-
   if (!overwrite) {
-    bool ret = takeCareSceneFolderItemsOnSaveSceneAs(
-        scene, scenePath, xsheet, orgLevelPaths,
-        portableFlashSaveAs ? &flashRelocatedLevels : nullptr);
+    bool ret = takeCareSceneFolderItemsOnSaveSceneAs(scene, scenePath, xsheet,
+                                                     orgLevelPaths);
     if (!ret) {
       revertOrgLevelPaths();
       return false;
@@ -1541,12 +1521,8 @@ bool IoCmd::saveScene(const TFilePath &path, int flags) {
   TFilePath newFullPath = scene->decodeFilePath(scenePath);
 
   if (!isAutosave) QApplication::setOverrideCursor(Qt::WaitCursor);
-  const bool updateContentHistory = app->getCurrentScene()->getDirtyFlag();
-  std::unique_ptr<TContentHistory> previousContentHistory;
-  if (portableFlashSaveAs && updateContentHistory)
-    if (auto *history = scene->getContentHistory())
-      previousContentHistory.reset(history->clone());
-  if (updateContentHistory) scene->getContentHistory(true)->modifiedNow();
+  if (app->getCurrentScene()->getDirtyFlag())
+    scene->getContentHistory(true)->modifiedNow();
 
   if (oldFullPath != newFullPath) {
     IconGenerator::instance()->clearRequests();
@@ -1574,10 +1550,7 @@ bool IoCmd::saveScene(const TFilePath &path, int flags) {
 
   bool saveSucceeded = true;
   try {
-    if (portableFlashSaveAs)
-      FlashNative::saveImportedSceneAs(*scene, scenePath, !isAutosave);
-    else
-      scene->save(scenePath, xsheet, !isAutosave);
+    scene->save(scenePath, xsheet, !isAutosave);
   } catch (const TSystemException &se) {
     if (!isAutosave)
       DVGui::warning(QString::fromStdWString(se.getMessage()));
@@ -1595,25 +1568,13 @@ bool IoCmd::saveScene(const TFilePath &path, int flags) {
     cp->assign(&keepCP, false);
   }
 
-  cp->assign(&keepCP);
-  // Make sure that the current cleanup palette is set to currentParams' palette
-  TApp::instance()
-      ->getPaletteController()
-      ->getCurrentCleanupPalette()
-      ->setPalette(cp->m_cleanupPalette.getPointer());
-
   // in case of saving subxsheet, revert the level paths after saving
   revertOrgLevelPaths();
 
   if (!saveSucceeded) {
-    if (portableFlashSaveAs && updateContentHistory)
-      scene->setContentHistory(previousContentHistory.release());
     if (!isAutosave) QApplication::restoreOverrideCursor();
     return false;
   }
-
-  if (!isAutosave && !scene->flashSaveWarning().isEmpty())
-    DVGui::warning(scene->flashSaveWarning());
 
   if (!overwrite && !saveSubxsheet)
     app->getCurrentScene()->notifyNameSceneChange();
@@ -1838,9 +1799,9 @@ bool IoCmd::saveAll(int flags) {
     Label->show();
   }
 
-  bool sceneSaved = saveScene(flags);
-  IoCmd::saveNonSceneFiles();
-  bool result = sceneSaved;
+  bool sceneSaved     = saveScene(flags);
+  bool resourcesSaved = saveNonSceneFiles(flags);
+  bool result         = sceneSaved && resourcesSaved;
 
   if (Label) {
     if (result) {
@@ -1866,24 +1827,30 @@ bool IoCmd::saveAll(int flags) {
 // IoCmd::saveNonSceneFiles()
 //---------------------------------------------------------------------------
 // This command should not change any content in scene!
-bool IoCmd::saveNonSceneFiles() {
+bool IoCmd::saveNonSceneFiles(int flags) {
   // try to save non scene files
 
+  bool isAutosave   = (flags & AUTO_SAVE) != 0;
   TApp *app         = TApp::instance();
   ToonzScene *scene = app->getCurrentScene()->getScene();
   SceneResources resources(scene, 0);
-  // Must wait for current save to finish, just in case
-  while (TApp::instance()->isSaveInProgress());
+  SaveInProgressGuard saveGuard;
+  if (!saveGuard.acquired()) {
+    app->getCurrentScene()->setDirtyFlag(true);
+    return false;
+  }
 
-  bool result = true;
-  TApp::instance()->setSaveInProgress(true);
+  bool result = false;
   try {
-    resources.save(scene->getScenePath());
+    result = resources.save(scene->getScenePath(), !isAutosave);
+    if (result) resources.updatePaths();
+    FullColorPalette::instance()->savePalette(scene);
   } catch (...) {
     result = false;
+    if (!isAutosave)
+      DVGui::error(QObject::tr("Couldn't save all scene resources."));
   }
-  TApp::instance()->setSaveInProgress(false);
-  if (result) resources.updatePaths();
+
   if (!result) app->getCurrentScene()->setDirtyFlag(true);
 
   // for update title bar
@@ -1957,11 +1924,11 @@ bool IoCmd::loadScene(ToonzScene &scene, const TFilePath &scenePath,
 //---------------------------------------------------------------------------
 
 bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
-                      bool checkSaveOldScene, bool preserveOldSceneOnFailure) {
+                      bool checkSaveOldScene) {
   RenderingSuspender suspender;
 
   // - Check if old Scene saved
-  if (checkSaveOldScene && !preserveOldSceneOnFailure)
+  if (checkSaveOldScene)
     if (!saveSceneIfNeeded(QApplication::tr("Load Scene"))) return false;
 
   // - Check if the scenePath is valid
@@ -1978,12 +1945,6 @@ bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
     return false;
   }
   if (!TSystem::doesExistFileOrLevel(scenePath)) return false;
-  if (preserveOldSceneOnFailure && (isXdts || isSxf)) {
-    DVGui::error(
-        QObject::tr("Protected scene loading requires a native imported "
-                    "scene bundle."));
-    return false;
-  }
 
   // - Check if a .tmp file exists
   TFilePath scenePathTemp(scenePath.getWideString() +
@@ -1999,7 +1960,7 @@ bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
     QString continueAnswer = QObject::tr("Continue");
     QString cancelAnswer   = QObject::tr("Cancel");
     int ret = DVGui::MsgBox(question, continueAnswer, cancelAnswer, 0);
-    if (ret == 2 || (preserveOldSceneOnFailure && ret == 0))
+    if (ret == 2)
       return false;
     else
       TSystem::removeFileOrLevel(scenePathTemp);
@@ -2009,15 +1970,7 @@ bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
   // if the .xml doesn't exist, load scene as standalone scene
   // belongs to sandbox project
   TProjectManager *pm = TProjectManager::instance();
-  auto sceneProject   = preserveOldSceneOnFailure
-                            ? pm->getCurrentProject()
-                            : pm->loadSceneProject(scenePath);
-  if (preserveOldSceneOnFailure && !sceneProject) {
-    DVGui::error(
-        QObject::tr("Select a Flare project before opening the "
-                    "imported scene."));
-    return false;
-  }
+  auto sceneProject   = pm->loadSceneProject(scenePath);
   if (!sceneProject) {
     QString msg;
     msg = QObject::tr(
@@ -2028,8 +1981,7 @@ bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
               .arg(QString::fromStdWString(scenePath.getWideString()));
     DVGui::warning(msg);
   }
-  if (!preserveOldSceneOnFailure && sceneProject &&
-      !sceneProject->isCurrent()) {
+  if (sceneProject && !sceneProject->isCurrent()) {
     QString sceneProjectName =
         QString::fromStdWString(sceneProject->getName().getWideString());
 
@@ -2053,107 +2005,6 @@ bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
     // sceneProject
   }
 
-  std::unique_ptr<ToonzScene> prepared;
-  if (preserveOldSceneOnFailure) {
-    QProgressDialog progress(QObject::tr("Opening imported scene"),
-                             QObject::tr("Cancel"), 0, 0,
-                             TApp::instance()->getMainWindow());
-    progress.setWindowModality(Qt::ApplicationModal);
-    progress.setMinimumDuration(0);
-    progress.setAutoClose(false);
-    progress.setAutoReset(false);
-    QElapsedTimer eventTimer;
-    eventTimer.start();
-    FlashNative::ReadOptions options;
-    options.cancelled = [&] {
-      if (eventTimer.elapsed() >= 35) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
-        eventTimer.restart();
-      }
-      return progress.wasCanceled();
-    };
-    options.progress = [&](int completed, int total) {
-      progress.setRange(0, total);
-      progress.setValue(completed);
-    };
-    progress.show();
-    try {
-      // These paths are $scenefolder-relative and stay in the imported bundle.
-      // Associate the new scene with the current project without running the
-      // legacy foreign-project import/switch branch.
-      prepared =
-          FlashNative::readImportedScene(scenePath, sceneProject, options);
-    } catch (const TException &error) {
-      progress.hide();
-      if (!progress.wasCanceled())
-        DVGui::warning(
-            QObject::tr("Could not open the imported scene. The current scene "
-                        "is unchanged.\n\n%1")
-                .arg(QString::fromStdWString(error.getMessage())));
-      return false;
-    } catch (const std::exception &error) {
-      progress.hide();
-      if (!progress.wasCanceled())
-        DVGui::warning(
-            QObject::tr("Could not open the imported scene. The current scene "
-                        "is unchanged.\n\n%1")
-                .arg(QString::fromUtf8(error.what())));
-      return false;
-    } catch (...) {
-      progress.hide();
-      if (!progress.wasCanceled())
-        DVGui::warning(
-            QObject::tr("Could not open the imported scene. The "
-                        "current scene is unchanged."));
-      return false;
-    }
-    progress.hide();
-
-    if (checkSaveOldScene) {
-      auto *handle     = TApp::instance()->getCurrentScene();
-      const bool dirty = handle->getDirtyFlag();
-      struct DirtyResource {
-        TXshSimpleLevelP level;
-        bool drawingDirty;
-        TPaletteP palette;
-        bool paletteDirty;
-      };
-      std::vector<DirtyResource> dirtyResources;
-      auto *oldScene = handle->getScene();
-      if (oldScene) {
-        auto *levels = oldScene->getLevelSet();
-        for (int index = 0; index < levels->getLevelCount(); ++index)
-          if (auto *drawing = levels->getLevel(index)->getSimpleLevel()) {
-            TPalette *palette = drawing->getPalette();
-            dirtyResources.push_back({drawing, drawing->getDirtyFlag(), palette,
-                                      palette && palette->getDirtyFlag()});
-          }
-      }
-      const auto restoreDirtyFlags = [&] {
-        handle->setDirtyFlag(dirty);
-        for (const auto &resource : dirtyResources) {
-          resource.level->setDirtyFlag(resource.drawingDirty);
-          if (resource.palette)
-            resource.palette->setDirtyFlag(resource.paletteDirty);
-        }
-      };
-      try {
-        // Keep an untitled working folder as well: clearing it here could
-        // remove the source document or imported bundle placed beneath it.
-        if (!saveSceneIfNeededImpl(QApplication::tr("Load Scene"), false)) {
-          restoreDirtyFlags();
-          return false;
-        }
-      } catch (...) {
-        restoreDirtyFlags();
-        throw;
-      }
-      // A requested save can change scene paths, but resource paths in the
-      // prepared bundle are independent of the old scene's save destination.
-      prepared->setProject(pm->getCurrentProject());
-    }
-  }
-
   // - Start to load scene
   QApplication::setOverrideCursor(Qt::WaitCursor);
 
@@ -2162,12 +2013,14 @@ bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
   // while switching scenes
   app->getCurrentLevel()->setLevel(nullptr);
 
+  app->getPaletteController()->getCurrentLevelPalette()->setPalette(nullptr);
+
   TUndoManager::manager()->reset();
   IconGenerator::instance()->clearRequests();
   IconGenerator::instance()->clearSceneIcons();
-  // Prepared levels already own unique native image IDs. Clearing the global
-  // manager here would discard their validated image bindings as well.
-  if (!preserveOldSceneOnFailure) ImageManager::instance()->clear();
+  ImageManager::instance()->clear();
+
+  FullColorPalette::instance()->clear();
 
   CacheFxCommand::instance()->onNewScene();
 
@@ -2178,13 +2031,11 @@ bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
       1);  // 0 would be after this session
 #endif
 
-  ToonzScene *scene = prepared ? prepared.release() : new ToonzScene();
+  ToonzScene *scene = new ToonzScene();
   TImageStyle::setCurrentScene(scene);
   printf("%s:%s Progressing:\n", __FILE__, __FUNCTION__);
   try {
-    if (preserveOldSceneOnFailure) {
-      // Native parsing and editable resource materialization already succeeded.
-    } else if (isXdts)
+    if (isXdts)
       XdtsIo::loadXdtsScene(scene, scenePath);
     else if (isSxf)
       SxfIo::loadSxfScene(scene, scenePath);
@@ -2193,9 +2044,8 @@ bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
       scene->load(scenePath);
     // import if needed
     auto currentProject = TProjectManager::instance()->getCurrentProject();
-    if (!preserveOldSceneOnFailure &&
-        (!scene->getProject() || scene->getProject()->getProjectPath() !=
-                                     currentProject->getProjectPath())) {
+    if (!scene->getProject() || scene->getProject()->getProjectPath() !=
+                                    currentProject->getProjectPath()) {
       ResourceImportDialog resourceLoader;
       // resourceLoader.setImportEnabled(true);
       ResourceImporter importer(scene, currentProject, resourceLoader);
@@ -2204,8 +2054,7 @@ bool IoCmd::loadScene(const TFilePath &path, bool updateRecentFile,
       scene->setScenePath(importer.getImportedScenePath());
       scene->setProject(currentProject);
     }
-    if (!preserveOldSceneOnFailure)
-      VersionControlManager::instance()->setFrameRange(scene->getLevelSet());
+    VersionControlManager::instance()->setFrameRange(scene->getLevelSet());
   } catch (TException &e) {
     printf("%s:%s TException ...:\n", __FILE__, __FUNCTION__);
 
@@ -3106,10 +2955,7 @@ void IoCmd::convertNAARaster2TLV(
       }
       IoCmd::ConvertingPopup convertingPopup(TApp::instance()->getMainWindow(),
                                              path);
-      // The merge-branch source read `ImageUtils::isPaintedImage(first)`, a name
-      // that exists in no version of this tree. The equivalent available probe
-      // in flareqt/imageutils.h, in this same namespace, is isAAImage.
-      if (ImageUtils::isAAImage(first)) {
+      if (ImageUtils::isPaintedImage(first)) {
         convertingPopup.setMaximum(to - from + 1);
         convertingPopup.show();
         ImageUtils::convertNaa2Tlv(path, dstPath, from, to,
@@ -3301,8 +3147,7 @@ void IoCmd::renameResources(
 // return false if cancelled.
 bool IoCmd::takeCareSceneFolderItemsOnSaveSceneAs(
     ToonzScene *scene, const TFilePath &newPath, TXsheet *subxsh,
-    QHash<TXshLevel *, TFilePath> &orgLevelPaths,
-    const std::set<TXshLevel *> *skipLevels) {
+    QHash<TXshLevel *, TFilePath> &orgLevelPaths) {
   auto setPathToLevel = [&](TXshLevel *level, TFilePath fp) {
     // in case of saving subxsheet, the current scene will not be switched to
     // the saved one
@@ -3340,7 +3185,6 @@ bool IoCmd::takeCareSceneFolderItemsOnSaveSceneAs(
   QString str;
   int count = 0;
   for (TXshLevel *level : levels) {
-    if (skipLevels && skipLevels->count(level)) continue;
     if (!level->getPath().isEmpty() &&
         TFilePath("$scenefolder").isAncestorOf(level->getPath())) {
       TFilePath levelFullPath = scene->decodeFilePath(level->getPath());
@@ -3609,13 +3453,20 @@ public:
 
   void execute() override {
     TXshLevel *level = TApp::instance()->getCurrentLevel()->getLevel();
-    if (!level) {
+    TPalette *rasterPalette = TApp::instance()
+                                  ->getPaletteController()
+                                  ->getCurrentLevelPalette()
+                                  ->getPalette();
+    const bool emptyRasterPalette =
+        !level && rasterPalette &&
+        FullColorPalette::instance()->isFullColorPalette(rasterPalette);
+    if (!level && !emptyRasterPalette) {
       DVGui::warning("No current level.");
       return;
     }
-    TXshSimpleLevel *sl  = level->getSimpleLevel();
-    TXshPaletteLevel *pl = level->getPaletteLevel();
-    if (!sl && !pl) {
+    TXshSimpleLevel *sl  = level ? level->getSimpleLevel() : nullptr;
+    TXshPaletteLevel *pl = level ? level->getPaletteLevel() : nullptr;
+    if (!sl && !pl && !emptyRasterPalette) {
       DVGui::warning("Current level has no palette.");
       return;
     }
@@ -3624,7 +3475,10 @@ public:
     TPalette *palette;
     TFilePath palettePath;
     /*- SimpleLevelの場合 -*/
-    if (sl) {
+    if (emptyRasterPalette) {
+      palette     = rasterPalette;
+      palettePath = FullColorPalette::instance()->getPath();
+    } else if (sl) {
       palette = sl->getPalette();
       if (!palette) {
         DVGui::warning("No current palette");
@@ -3671,17 +3525,25 @@ public:
       palettePath = scene->decodeFilePath(palettePath);
     }
 
-    if (sl && sl->getPath().getType() == "pli")
-      sl->save(palettePath, TFilePath(), true);
-    else if (sl && sl->getType() & FULLCOLOR_TYPE)
-      FullColorPalette::instance()->savePalette(scene);
-    else
-      StudioPalette::instance()->save(palettePath, palette);
+    try {
+      if (sl && sl->getPath().getType() == "pli")
+        sl->save(palettePath, TFilePath(), true);
+      else if (emptyRasterPalette || (sl && sl->getType() & FULLCOLOR_TYPE))
+        FullColorPalette::instance()->savePalette(scene);
+      else
+        StudioPalette::instance()->save(palettePath, palette);
+    } catch (const TException &e) {
+      DVGui::warning(QObject::tr("Could not save the palette.\n%1")
+                         .arg(QString::fromStdWString(e.getMessage())));
+      return;
+    }
     /*- Dirtyフラグの変更 -*/
     if (sl)
       sl->getPalette()->setDirtyFlag(false);
     else if (pl)
       pl->getPalette()->setDirtyFlag(false);
+    else if (emptyRasterPalette)
+      palette->setDirtyFlag(false);
 
     if (Preferences::instance()->getBoolValue(resetUndoOnSavingLevel))
       TUndoManager::manager()->reset();
@@ -3692,6 +3554,53 @@ public:
         ->notifyPaletteDirtyFlagChanged();
   }
 } overwritePaletteCommandHandler;
+
+//=============================================================================
+// Save the shared raster palette as the global default
+//-----------------------------------------------------------------------------
+class SaveAsDefaultRasterPaletteCommandHandler final : public MenuItemHandler {
+public:
+  SaveAsDefaultRasterPaletteCommandHandler()
+      : MenuItemHandler(MI_SaveAsDefaultRasterPalette) {}
+
+  void execute() override {
+    TApp *app = TApp::instance();
+    TPaletteP palette(app->getCurrentPalette()->getPalette());
+    FullColorPalette *fullColorPalette = FullColorPalette::instance();
+    TXshLevel *level                   = app->getCurrentLevel()->getLevel();
+    if (!palette || palette->isCleanupPalette() ||
+        !fullColorPalette->isFullColorPalette(palette.getPointer()) ||
+        palette.getPointer() != app->getPaletteController()
+                                    ->getCurrentLevelPalette()
+                                    ->getPalette() ||
+        (level && level->getType() != OVL_XSHLEVEL)) {
+      DVGui::warning(QObject::tr("Select a raster drawing palette first."));
+      return;
+    }
+
+    const TFilePath path = fullColorPalette->getDefaultPalettePath();
+    QString question     = QObject::tr(
+            "Save the current raster drawing palette as the global default?\n\n"
+                "Projects with their own raster palette will keep using it.");
+    if (TSystem::doesExistFileOrLevel(path))
+      question +=
+          QObject::tr("\n\nThis will overwrite %1.").arg(path.getQString());
+    if (DVGui::MsgBox(question, QObject::tr("Save"), QObject::tr("Cancel"),
+                      0) != 1)
+      return;
+
+    try {
+      fullColorPalette->saveAsDefault(palette.getPointer());
+      StudioPalette::instance()->notifyTreeChange();
+    } catch (const TException &e) {
+      DVGui::warning(
+          QObject::tr("Could not save the default raster palette.\n%1")
+              .arg(QString::fromStdWString(e.getMessage())));
+    } catch (...) {
+      DVGui::warning(QObject::tr("Could not save the default raster palette."));
+    }
+  }
+} saveAsDefaultRasterPaletteCommandHandler;
 
 //=============================================================================
 // Save scene and levels

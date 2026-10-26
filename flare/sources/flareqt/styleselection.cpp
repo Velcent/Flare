@@ -18,6 +18,7 @@
 #include "flare/cleanupcolorstyles.h"
 #include "flare/txshlevelhandle.h"
 #include "flare/levelproperties.h"
+#include "flare/fullcolorpalette.h"
 
 // TnzCore includes
 #include "tcolorstyles.h"
@@ -694,9 +695,11 @@ void TStyleSelection::deleteStyles() {
 //-------------------------------------------------------------------
 
 void TStyleSelection::eraseUnusedStyle() {
+  TPalette *palette = m_paletteHandle ? m_paletteHandle->getPalette() : nullptr;
+  if (!palette || FullColorPalette::instance()->isFullColorPalette(palette))
+    return;
   std::set<TXshSimpleLevel *> levels;
   int row, column, i, j;
-  TPalette *palette = m_paletteHandle->getPalette();
   findPaletteLevels(levels, row, column, palette, m_xsheetHandle->getXsheet());
 
   // Check which styles are used and which are not

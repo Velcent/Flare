@@ -1,7 +1,7 @@
 {
   "upstreams": {
     "opentoonz": {
-      "last_synced_sha": "829d1f4cd4f517b43b191ebee03de65382a07ed9",
+      "last_synced_sha": "5afbfdb92ed089592674163d29fe21faaf7e862b",
       "synced_commits": [
         "2a1cff6ba3f05b6a5aa53e72ee408209e2649ee9",
         "5989bf2ead06a12ae2f698b249b27780f305b717",
@@ -86,7 +86,28 @@
         "a010fd6952d9d86eec4ff16a0c188548ad5c4166",
         "7755ea2e33de68648566cc69564e4a07fd72a634",
         "c1b12a71a109b00927c35f818b15045503dce9bd",
-        "829d1f4cd4f517b43b191ebee03de65382a07ed9"
+        "829d1f4cd4f517b43b191ebee03de65382a07ed9",
+        "646bcefd773cb5d253dc18a6968bf8beca417234",
+        "0234719ee7e5a3baff688380d14092522eb5f6c7",
+        "fe55f3c181c2c76a6a03a46963fd0d294106511d",
+        "dd247feddd2939c7e1eec4c8130fe8691453970b",
+        "8a9ef5f324338f85a589d6e970aa2dfb81d9844b",
+        "ec9dced3626ef120ece5666f86efe861e532bb2f",
+        "633b43fd7032b4bd7bd8141e7c6eab612bb01ca7",
+        "53a15e5734ce413b979642c19d9774d893a2b8e7",
+        "3b65d2986b09ec2741f3bd74de412b0f8b7b1e6c",
+        "299a75b930dc860763184c6b3eb50dcc049a0594",
+        "191c6bf1c88b0f3dc78d32fa3171d98377f16cc6",
+        "61f2e66303491125a79e80e5d5672b7093c17624",
+        "6c9041353a8ad61cd6a58839b759a51142c51ab8",
+        "2036dcbb90cc3ec5ebda329f4d0f805dd6b5c9e6",
+        "800e216701dd6fdffd41e0248ffd54368555db10",
+        "a57c7355e6b71c11e8bb967ff9bfb2687e59771b",
+        "b2ebe16b6e9d5fb5caaed28f11dfa6e639b8ebae",
+        "372e59ccfc855129acaa7022e1f09e52921953e4",
+        "ca613780805639a66dd7a04583aa904f39cf1c9d",
+        "88e2298267cd7605c1ce7c791901c3c78a9ceb31",
+        "5afbfdb92ed089592674163d29fe21faaf7e862b"
       ]
     },
     "tahoma2d": {

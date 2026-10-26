@@ -1,7 +1,7 @@
 
 
 #include "tiio_pli.h"
-#include "pli_precision.h"
+#include <cmath>
 //#include "tstrokeoutline.h"
 #include "tsystem.h"
 #include "pli_io.h"
@@ -104,8 +104,59 @@ public:
     return *this;
   }
 
+  void readTrailCycle(TColorStyle *style) {
+    if (!TrailStyles::isTrail(style)) return;
+    // Extensions are independently optional and confined to this typed
+    // style record. Unknown/truncated suffixes are left alone.
+    while (m_count + 1 < int(m_stream->size())) {
+      const TStyleParam &marker = (*m_stream)[m_count];
+      const TStyleParam &value  = (*m_stream)[m_count + 1];
+      if (marker.m_type != TStyleParam::SP_STRING) return;
+      const bool cycle  = marker.m_string == "trail-cycle-v1";
+      const bool offset = marker.m_string == "trail-frame-offset-v1";
+      const bool size   = marker.m_string == "trail-size-multiplier-v1";
+      if (!cycle && !offset && !size) return;
+      if (cycle) {
+        if (value.m_type != TStyleParam::SP_INT) return;
+        const double number = value.m_numericVal;
+        if (std::isfinite(number) && number >= 0 && number <= 3 &&
+            number == int(number))
+          TrailStyles::setMode(style, TrailCycle::modeFromValue(int(number)));
+      } else if (offset) {
+        if (value.m_type != TStyleParam::SP_STRING) return;
+        // PLI numeric style parameters have only a 16-bit integer part.
+        // A tagged decimal string preserves the full source-frame ID range.
+        bool ok         = false;
+        const int frame = QString::fromStdString(value.m_string).toInt(&ok);
+        if (ok && frame >= 0) TrailStyles::setFrameOffset(style, frame);
+      } else {
+        if (value.m_type != TStyleParam::SP_STRING) return;
+        bool ok = false;
+        const double multiplier =
+            QString::fromStdString(value.m_string).toDouble(&ok);
+        if (ok) TrailStyles::setSizeMultiplier(style, multiplier);
+      }
+      m_count += 2;
+    }
+  }
+
   VersionNumber versionNumber() const override { return m_version; }
 };
+
+void saveStyleWithTrailCycle(const TColorStyle *style,
+                             PliOutputStream &stream) {
+  style->save(stream);
+  const auto mode = TrailStyles::getMode(style);
+  if (mode != TrailCycle::Mode::Off)
+    stream << std::string("trail-cycle-v1") << int(mode);
+  const int offset = TrailStyles::getFrameOffset(style);
+  if (offset > 0)
+    stream << std::string("trail-frame-offset-v1") << std::to_string(offset);
+  const double multiplier = TrailStyles::getSizeMultiplier(style);
+  if (multiplier != 1.0)
+    stream << std::string("trail-size-multiplier-v1")
+           << QString::number(multiplier, 'g', 17).toStdString();
+}
 
 //---------------------------------------------------------------------------
 
@@ -174,24 +225,26 @@ pli->m_idWrittenColorsArray[i]=false;
 pli->m_idWrittenColorsArray[0]=true;
 */
 
-  for (i = 1; i < (unsigned)vPalette->getStyleCount(); i++) {
-    TColorStyle *style   = vPalette->getStyle(i);
-    TPalette::Page *page = vPalette->getStylePage(i);
-    if (!page) continue;
-    int pageIndex = 65535;
-    // if (page)
-    pageIndex = page->getIndex();
+  // Write styles in displayed page order. PLI stores page index but not
+// position within a page. The reader reconstructs it from style tag order.
+for (int pageIndex = 0; pageIndex < vPalette->getPageCount(); pageIndex++) {
+  TPalette::Page *page = vPalette->getPage(pageIndex);
+  for (int styleIndex = 0; styleIndex < page->getStyleCount();
+       styleIndex++) {
+    int styleId = page->getStyleId(styleIndex);
+    if (styleId <= 0) continue;
 
-    // TColorStyle*style = tempVecImg->getPalette()->getStyle(styleId);
+    TColorStyle *style = vPalette->getStyle(styleId);
     std::vector<TStyleParam> stream;
     PliOutputStream chan(&stream);
-    style->save(chan);  // viene riempito lo stream;
+    saveStyleWithTrailCycle(style, chan);
 
     assert(pageIndex >= 0 && pageIndex <= 65535);
-    StyleTag *styleTag =
-        new StyleTag(i, pageIndex, stream.size(), stream.data());
+    StyleTag *styleTag = new StyleTag(
+        styleId, pageIndex, stream.size(), stream.data());
     pli->m_palette_tags.push_back((PliObjectTag *)styleTag);
   }
+}
 
   if (vPalette->isAnimated()) {
     std::set<int> keyFrames;
@@ -218,7 +271,7 @@ pli->m_idWrittenColorsArray[0]=true;
           // TColorStyle*style = tempVecImg->getPalette()->getStyle(styleId);
           std::vector<TStyleParam> stream;
           PliOutputStream chan(&stream);
-          style->save(chan);  // viene riempito lo stream;
+          saveStyleWithTrailCycle(style, chan);
 
           assert(pageIndex >= 0 && pageIndex <= 65535);
           StyleTag *styleTag =
@@ -346,6 +399,9 @@ static void createGroup(GroupTag *groupTag, TVectorImage *vi,
 TImageP TImageReaderPli::doLoad() {
   CreateStrokeData strokeData;
 
+  // preparo l'immagine da restituire
+  TVectorImage *outVectImage = new TVectorImage(true);
+  TImageP outImage(outVectImage);
   // fisso il colore di default a nero opaco
   // TPixel currentColor=TPixel::Black;
   // TStrokeStyle *currStyle = NULL;
@@ -355,43 +411,13 @@ TImageP TImageReaderPli::doLoad() {
   //{
   // un contatore
   UINT i;
+  outVectImage->setAutocloseTolerance(m_lrp->m_pli->getAutocloseTolerance());
+
   ImageTag *imageTag;
 
   imageTag = m_lrp->m_pli->loadFrame(m_frameId);
   if (!imageTag)
     throw TImageException(m_path, "Corrupted or invalid image data");
-
-  // Policy applies to the whole frame, including setFillData(), which can
-  // compute regions immediately. Do not depend on the serialized tag order.
-  TVectorImage::RegionFindingMode regionFindingMode =
-      TVectorImage::RegionFindingMode::Default;
-  bool hasRegionFindingMode = false;
-  for (i = 0; i < imageTag->m_numObjects; ++i) {
-    if (imageTag->m_object[i]->m_type != PliTag::REGION_FINDING_MODE_GOBJ)
-      continue;
-    if (hasRegionFindingMode)
-      throw TImageException(m_path, "Duplicate PLI region finding mode tag");
-    hasRegionFindingMode = true;
-    regionFindingMode = ((RegionFindingModeTag *)imageTag->m_object[i])->m_mode;
-  }
-  if (regionFindingMode == TVectorImage::RegionFindingMode::PreserveSource) {
-    for (i = 0; i < imageTag->m_numObjects; ++i) {
-      if (imageTag->m_object[i]->m_type != PliTag::INTERSECTION_DATA_GOBJ)
-        continue;
-      const IntersectionDataTag *tag =
-          (IntersectionDataTag *)imageTag->m_object[i];
-      for (UINT j = 0; j < tag->m_branchCount; ++j)
-        if (tag->m_branchArray[j].m_strokeIndex < 0)
-          throw TImageException(
-              m_path, "Source-preserving PLI contains synthetic fill edges");
-    }
-  }
-
-  // preparo l'immagine da restituire
-  TVectorImage *outVectImage = new TVectorImage(true);
-  TImageP outImage(outVectImage);
-  outVectImage->setRegionFindingMode(regionFindingMode);
-  outVectImage->setAutocloseTolerance(m_lrp->m_pli->getAutocloseTolerance());
 
   if (m_lrp->m_mapOfImage[m_frameId].second == false)
     m_lrp->m_mapOfImage[m_frameId].second = true;
@@ -441,9 +467,6 @@ TImageP TImageReaderPli::doLoad() {
           ((double)toleranceTag->m_autoCloseTolerance) / 1000);
       break;
     }
-    case PliTag::REGION_FINDING_MODE_GOBJ:
-      // Applied before any stroke or intersection data is reconstructed.
-      break;
     default:
       break;
     }  // switch(groupTag->m_object[j]->m_type)
@@ -493,8 +516,7 @@ TImageWriterPli::TImageWriterPli(const TFilePath &f, const TFrameId &frameId,
 //-----------------------------------------------------------------------------
 
 static void putStroke(TStroke *stroke, int &currStyleId,
-                      std::vector<PliObjectTag *> &tags,
-                      int sourcePrecisionScale) {
+                      std::vector<PliObjectTag *> &tags) {
   double maxThickness = 0;
   bool nonStdOutline  = false;
   assert(stroke);
@@ -514,11 +536,12 @@ static void putStroke(TStroke *stroke, int &currStyleId,
     tags.push_back(colorTag.release());
   }
 
-  // If the outline options are non-standard (not round), add the outline infos
+  // If the outline options are non-standard, add the outline infos.
   TStroke::OutlineOptions &options = stroke->outlineOptions();
   if (options.m_capStyle != TStroke::OutlineOptions::ROUND_CAP ||
       options.m_joinStyle != TStroke::OutlineOptions::ROUND_JOIN ||
-      options.m_miterLower != 0.0 || options.m_miterUpper != 4.0) {
+      options.m_miterLower != 0.0 || options.m_miterUpper != 4.0 ||
+      options.m_patternFrameOffset != 0 || options.m_patternFrameStep != 1) {
     StrokeOutlineOptionsTag *outlineOptionsTag =
         new StrokeOutlineOptionsTag(options);
     tags.push_back((PliObjectTag *)outlineOptionsTag);
@@ -526,28 +549,11 @@ static void putStroke(TStroke *stroke, int &currStyleId,
   }
 
   UINT k;
-  auto anchored = [sourcePrecisionScale](const TThickPoint &point) {
-    TThickPoint result = point;
-    result.x =
-        double(int(point.x * sourcePrecisionScale)) / sourcePrecisionScale;
-    result.y =
-        double(int(point.y * sourcePrecisionScale)) / sourcePrecisionScale;
-    return result;
-  };
   for (k = 0; k < (UINT)chunkCount; ++k) {
     const TThickQuadratic *q = stroke->getChunk(k);
     maxThickness =
         std::max({maxThickness, q->getThickP0().thick, q->getThickP1().thick});
-    // Legacy PLI rounds every delta independently. Over long chains that
-    // drifts; across distinct source strokes it can unjoin one authored
-    // endpoint and erase a face. The existing PLI wire format can store
-    // integer differences of absolute grid controls without a reader change.
-    if (sourcePrecisionScale)
-      strokeChain[k] =
-          TThickQuadratic(anchored(q->getThickP0()), anchored(q->getThickP1()),
-                          anchored(q->getThickP2()));
-    else
-      strokeChain[k] = *q;
+    strokeChain[k] = *q;
   }
   maxThickness = std::max(maxThickness,
                           stroke->getChunk(chunkCount - 1)->getThickP2().thick);
@@ -572,7 +578,7 @@ static void putStroke(TStroke *stroke, int &currStyleId,
 
 //-----------------------------------------------------------------------------
 GroupTag *makeGroup(TVectorImageP &vi, int &currStyleId, int &index,
-                    int currDepth, int sourcePrecisionScale);
+                    int currDepth);
 
 void TImageWriterPli::save(const TImageP &img) {
   // Allocate an image
@@ -580,33 +586,12 @@ void TImageWriterPli::save(const TImageP &img) {
   int currStyleId          = -1;
   if (!tempVecImg) throw TImageException(m_path, "No data to save");
 
-  const TVectorImage::RegionFindingMode regionFindingMode =
-      tempVecImg->getRegionFindingMode();
-  if (regionFindingMode != TVectorImage::RegionFindingMode::Default &&
-      regionFindingMode != TVectorImage::RegionFindingMode::PreserveSource)
-    throw TImageException(m_path, "Unsupported PLI region finding mode");
-
-  int precisionScale = PliCodec::precisionScaleForImage(tempVecImg);
-  if (precisionScale == 0) {
-    // Ordinary frames always save on the legacy grid, as before.
-    if (regionFindingMode == TVectorImage::RegionFindingMode::PreserveSource)
-      throw TImageException(m_path,
-                            "Vector coordinate exceeds PLI codec limits");
-    precisionScale = PliCodec::defaultPrecisionScale;
-  }
-
-  std::unique_ptr<IntersectionBranch[]> v;
-  UINT intersectionSize = tempVecImg->getFillData(v);
-  if (regionFindingMode == TVectorImage::RegionFindingMode::PreserveSource) {
-    for (UINT i = 0; i < intersectionSize; ++i)
-      if (v[i].m_strokeIndex < 0)
-        throw TImageException(
-            m_path, "Source-preserving PLI contains synthetic fill edges");
-  }
-
   //  Check that the frame about to insert is not already present
   //   So you do not increase the number of current frames
   ++m_lwp->m_frameNumber;
+
+  std::unique_ptr<IntersectionBranch[]> v;
+  UINT intersectionSize = tempVecImg->getFillData(v);
 
   // alloco l'oggetto m_lwp->m_pli ( di tipo ParsedPli ) che si occupa di
   // costruire la struttura
@@ -630,11 +615,9 @@ solo nel costruttore)
   std::vector<PliObjectTag *> tags;
   // tags = new   std::vector<PliObjectTag *>;
 
-  // Imported source contours may have faces much thinner than the legacy
-  // 1/16384 grid, or long chains whose rounded deltas accumulate. Choose a
-  // finer per-frame grid only when every value cast by the PLI codec fits a
-  // signed 32-bit integer. Ordinary Flare frames keep their old grid.
+  // Store the precision scale to be used in saving the quadratics
   {
+    int precisionScale    = sq(128);
     pli->precisionScale() = precisionScale;
 
     PliTag *tag = new PrecisionScaleTag(precisionScale);
@@ -658,27 +641,15 @@ solo nel costruttore)
   } else {
     pli->setVersion(71, 0);
   }
-  if (regionFindingMode == TVectorImage::RegionFindingMode::PreserveSource) {
-    tags.push_back(new RegionFindingModeTag(regionFindingMode));
-    // setVersion locks upgrades, so later ordinary frames cannot downgrade a
-    // mixed-policy level. Ordinary frames retain their legacy tag/version data.
-    pli->setVersion(151, 0);
-  }
   // recupero il numero di stroke dall'immagine
   int numStrokes = tempVecImg->getStrokeCount();
 
   int i = 0;
-  const int sourcePrecisionScale =
-      regionFindingMode == TVectorImage::RegionFindingMode::PreserveSource
-          ? precisionScale
-          : 0;
   while (i < (UINT)numStrokes) {
     if (tempVecImg->isStrokeGrouped(i))
-      tags.push_back(
-          makeGroup(tempVecImg, currStyleId, i, 1, sourcePrecisionScale));
+      tags.push_back(makeGroup(tempVecImg, currStyleId, i, 1));
     else
-      putStroke(tempVecImg->getStroke(i++), currStyleId, tags,
-                sourcePrecisionScale);
+      putStroke(tempVecImg->getStroke(i++), currStyleId, tags);
   }
 
   if (intersectionSize > 0) {
@@ -846,12 +817,17 @@ TPalette *readPalette(GroupTag *paletteTag, int majorVersion,
 
     PliInputStream chan(&params, majorVersion, minorVersion);
     TColorStyle *style = TColorStyle::load(chan);  // leggo params
+    chan.readTrailCycle(style);
     assert(id > 0);
     if (id < palette->getStyleCount()) {
       if (frame > -1) {
         TColorStyle *oldStyle = palette->getStyle(id);
+        const auto trailMode  = TrailStyles::getMode(oldStyle);
+        const int trailOffset = TrailStyles::getFrameOffset(oldStyle);
         oldStyle->copy(*style);
         palette->setKeyframe(id, frame);
+        TrailStyles::setMode(oldStyle, trailMode);
+        TrailStyles::setFrameOffset(oldStyle, trailOffset);
       } else
         palette->setStyle(id, style);
     } else {
@@ -940,17 +916,16 @@ TImageReaderPli::TImageReaderPli(const TFilePath &f, const TFrameId &frameId,
 //=============================================================================
 
 GroupTag *makeGroup(TVectorImageP &vi, int &currStyleId, int &index,
-                    int currDepth, int sourcePrecisionScale) {
+                    int currDepth) {
   std::vector<PliObjectTag *> tags;
   int i = index;
   while (i < (UINT)vi->getStrokeCount() &&
          vi->getCommonGroupDepth(i, index) >= currDepth) {
     int strokeDepth = vi->getGroupDepth(i);
     if (strokeDepth == currDepth)
-      putStroke(vi->getStroke(i++), currStyleId, tags, sourcePrecisionScale);
+      putStroke(vi->getStroke(i++), currStyleId, tags);
     else if (strokeDepth > currDepth)
-      tags.push_back(
-          makeGroup(vi, currStyleId, i, currDepth + 1, sourcePrecisionScale));
+      tags.push_back(makeGroup(vi, currStyleId, i, currDepth + 1));
     else
       assert(false);
   }

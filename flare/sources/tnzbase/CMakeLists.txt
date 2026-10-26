@@ -111,8 +111,12 @@ set(SOURCES
 )
 
 if(BUILD_TARGET_WIN)
+    set(HEADERS ${HEADERS}
+        tscanner/tscannerwia.h
+    )
     set(SOURCES ${SOURCES}
         tscanner/TScannerIO/TUSBScannerIO_W.cpp
+        tscanner/tscannerwia.cpp
     )
 else()
     set(SOURCES ${SOURCES}
@@ -189,6 +193,9 @@ include_directories(
 if(BUILD_ENV_MSVC)
     set(EXTRA_LIBS
         tnzcore
+        wiaguid
+        ole32
+        oleaut32
     )
 elseif(BUILD_ENV_APPLE)
     find_library(TWAIN_LIB TWAIN)

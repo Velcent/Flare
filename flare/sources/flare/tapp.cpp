@@ -6,17 +6,14 @@
 #include "cleanupsettingspopup.h"
 #include "iocommand.h"
 #include "mainwindow.h"
-
-// showMessage calls QMainWindow::statusBar(), which returns a QStatusBar -- the
-// type needs its definition here, not just the forward declaration the header
-// relies on.
-#include <QStatusBar>
 #include "cellselection.h"
+#include "canvassizepopup.h"
 
 // TnzTools includes
 #include "tools/tool.h"
 #include "tools/toolhandle.h"
 #include "tools/toolcommandids.h"
+#include "tools/editassistantstool.h"
 
 // TnzQt includes
 #include "flareqt/tselectionhandle.h"
@@ -50,6 +47,7 @@
 #include "flare/tcamera.h"
 #include "flare/preferences.h"
 #include "flare/txshsoundcolumn.h"
+#include "flare/fullcolorpalette.h"
 
 // TnzCore includes
 #include "tbigmemorymanager.h"
@@ -57,6 +55,7 @@
 #include "trasterimage.h"
 #include "tunit.h"
 #include "tsystem.h"
+#include "sceneviewer.h"
 
 // Qt includes
 #include <QTimer>
@@ -66,6 +65,7 @@
 #include <QCoreApplication>
 #include <QApplication>
 #include <QDesktopWidget>
+#include <algorithm>
 
 //===================================================================
 
@@ -125,76 +125,56 @@ TApp::TApp()
 
   m_paletteController = new PaletteController();
 
-  bool ret = true;
-
-  ret = ret && QObject::connect(m_currentXsheet, SIGNAL(xsheetChanged()), this,
-                                SLOT(onXsheetChanged()));
-
-  ret = ret && QObject::connect(m_currentXsheet, SIGNAL(xsheetSoundChanged()),
-                                this, SLOT(onXsheetSoundChanged()));
-
-  ret = ret && QObject::connect(m_currentScene, SIGNAL(sceneSwitched()), this,
-                                SLOT(onSceneSwitched()));
-
-  ret = ret && QObject::connect(m_currentScene, SIGNAL(sceneChanged()), this,
-                                SLOT(onSceneChanged()));
-
-  ret = ret && QObject::connect(m_currentXsheet, SIGNAL(xsheetSwitched()), this,
-                                SLOT(onXsheetSwitched()));
-
-  ret = ret && QObject::connect(m_currentFrame, SIGNAL(frameSwitched()), this,
-                                SLOT(onFrameSwitched()));
-
-  ret = ret && QObject::connect(m_currentFrame, SIGNAL(frameSwitched()), this,
-                                SLOT(onImageChanged()));
-
-  ret = ret && QObject::connect(m_currentFx, SIGNAL(fxSwitched()), this,
-                                SLOT(onFxSwitched()));
-
-  ret = ret && QObject::connect(m_currentColumn, SIGNAL(columnIndexSwitched()),
-                                this, SLOT(onColumnIndexSwitched()));
-
-  ret = ret && QObject::connect(m_currentColumn, SIGNAL(columnIndexSwitched()),
-                                this, SLOT(onImageChanged()));
-
-  ret = ret &&
-        QObject::connect(m_currentLevel, SIGNAL(xshLevelSwitched(TXshLevel *)),
-                         this, SLOT(onImageChanged()));
-
-  ret = ret &&
-        QObject::connect(m_currentLevel, SIGNAL(xshLevelSwitched(TXshLevel *)),
-                         this, SLOT(onXshLevelSwitched(TXshLevel *)));
-
-  ret = ret && QObject::connect(m_currentLevel, SIGNAL(xshLevelChanged()), this,
-                                SLOT(onXshLevelChanged()));
-
-  ret = ret && QObject::connect(m_currentObject, SIGNAL(objectSwitched()), this,
-                                SLOT(onObjectSwitched()));
-
-  ret = ret && QObject::connect(m_currentObject, SIGNAL(splineChanged()), this,
-                                SLOT(onSplineChanged()));
-
-  ret = ret && QObject::connect(m_paletteController->getCurrentLevelPalette(),
-                                SIGNAL(paletteChanged()), this,
-                                SLOT(onPaletteChanged()));
-
-  ret = ret && QObject::connect(m_paletteController->getCurrentLevelPalette(),
-                                SIGNAL(colorStyleSwitched()), this,
-                                SLOT(onLevelColorStyleSwitched()));
-
-  ret = ret && QObject::connect(m_paletteController->getCurrentLevelPalette(),
-                                SIGNAL(colorStyleChangedOnMouseRelease()), this,
-                                SLOT(onLevelColorStyleChanged()));
-
-  ret = ret && QObject::connect(m_paletteController->getCurrentCleanupPalette(),
-                                SIGNAL(paletteChanged()), m_currentScene,
-                                SIGNAL(sceneChanged()));
+  connect(m_currentXsheet, &TXsheetHandle::xsheetChanged, this,
+          &TApp::onXsheetChanged);
+  connect(m_currentXsheet, &TXsheetHandle::xsheetSoundChanged, this,
+          &TApp::onXsheetSoundChanged);
+  connect(m_currentScene, &TSceneHandle::sceneSwitched, this,
+          &TApp::onSceneSwitched);
+  connect(m_currentScene, &TSceneHandle::sceneChanged, this,
+          &TApp::onSceneChanged);
+  connect(m_currentScene, &TSceneHandle::preferenceChanged, this,
+          [this](const QString &name) {
+            if (name == "DefLevelType" || name == "EnableAutocreation")
+              updateXshLevel();
+          });
+  connect(m_currentXsheet, &TXsheetHandle::xsheetSwitched, this,
+          &TApp::onXsheetSwitched);
+  connect(m_currentFrame, &TFrameHandle::frameSwitched, this,
+          &TApp::onFrameSwitched);
+  connect(m_currentFrame, &TFrameHandle::frameSwitched, this,
+          &TApp::onImageChanged);
+  connect(m_currentFx, &TFxHandle::fxSwitched, this, &TApp::onFxSwitched);
+  connect(m_currentColumn, &TColumnHandle::columnIndexSwitched, this,
+          &TApp::onColumnIndexSwitched);
+  connect(m_currentColumn, &TColumnHandle::columnIndexSwitched, this,
+          &TApp::onImageChanged);
+  connect(m_currentLevel, &TXshLevelHandle::xshLevelSwitched, this,
+          &TApp::onImageChanged);
+  connect(m_currentLevel, &TXshLevelHandle::xshLevelSwitched, this,
+          &TApp::onXshLevelSwitched);
+  connect(m_currentLevel, &TXshLevelHandle::xshLevelChanged, this,
+          &TApp::onXshLevelChanged);
+  connect(m_currentObject, &TObjectHandle::objectSwitched, this,
+          &TApp::onObjectSwitched);
+  connect(m_currentObject, &TObjectHandle::splineChanged, this,
+          &TApp::onSplineChanged);
+  connect(m_paletteController->getCurrentLevelPalette(),
+          &TPaletteHandle::paletteChanged, this, &TApp::onPaletteChanged);
+  connect(m_paletteController->getCurrentLevelPalette(),
+          &TPaletteHandle::colorStyleSwitched, this,
+          &TApp::onLevelColorStyleSwitched);
+  connect(m_paletteController->getCurrentLevelPalette(),
+          &TPaletteHandle::colorStyleChangedOnMouseRelease, this,
+          &TApp::onLevelColorStyleChanged);
+  connect(m_paletteController->getCurrentCleanupPalette(),
+          &TPaletteHandle::paletteChanged, m_currentScene,
+          &TSceneHandle::sceneChanged);
 
   TMeasureManager::instance()->addCameraMeasures(getCurrentCameraSize);
 
   m_autosaveTimer = new QTimer(this);
-  ret             = ret &&
-        connect(m_autosaveTimer, SIGNAL(timeout()), this, SLOT(autosave()));
+  connect(m_autosaveTimer, &QTimer::timeout, this, &TApp::autosave);
 
   Preferences *preferences = Preferences::instance();
 
@@ -203,18 +183,16 @@ TApp::TApp()
             (int)(/*15*1024*/ TSystem::getFreeMemorySize(true) * .8)))
       DVGui::warning(tr("Error allocating memory: not enough memory."));
   }
-  ret = ret &&
-        connect(preferences, SIGNAL(stopAutoSave()), SLOT(onStopAutoSave()));
-  ret = ret &&
-        connect(preferences, SIGNAL(startAutoSave()), SLOT(onStartAutoSave()));
-  ret = ret && connect(m_currentTool, SIGNAL(toolEditingFinished()),
-                       SLOT(onToolEditingFinished()));
+  connect(preferences, &Preferences::stopAutoSave, this, &TApp::onStopAutoSave);
+  connect(preferences, &Preferences::startAutoSave, this,
+          &TApp::onStartAutoSave);
+  connect(m_currentTool, &ToolHandle::toolEditingFinished, this,
+          &TApp::onToolEditingFinished);
 
   if (preferences->isAutosaveEnabled())
     m_autosaveTimer->start(preferences->getAutosavePeriod() * 1000 * 60);
 
   UnitParameters::setCurrentDpiGetter(getCurrentDpi);
-  assert(ret);
 }
 
 //-----------------------------------------------------------------------------
@@ -222,12 +200,6 @@ TApp::TApp()
 TApp *TApp::instance() {
   static TApp _instance;
   return &_instance;
-}
-
-void TApp::showMessage(QString message, int duration) {
-  // Upstream routes this to a dedicated status-bar member. The class here does
-  // not carry one; the main window's status bar is the equivalent surface.
-  if (m_mainWindow) m_mainWindow->statusBar()->showMessage(message, duration);
 }
 
 //-----------------------------------------------------------------------------
@@ -289,8 +261,8 @@ void TApp::setCurrentLevelStyleIndex(int index, bool forceUpdate) {
 //-----------------------------------------------------------------------------
 
 int TApp::getCurrentImageType() {
-  /*-- 現在のセルの種類に関係無く、Splineを選択中はベクタを編集できるようにする
-   * --*/
+  // When a spline is selected, allow vector editing regardless of the current
+  // cell type.
   if (getCurrentObject()->isSpline()) return TImage::VECTOR;
 
   TXshSimpleLevel *sl = 0;
@@ -304,8 +276,8 @@ int TApp::getCurrentImageType() {
                  ? TImage::VECTOR
                  :  // RASTER image type includes both TZI_XSHLEVEL
                  (levelType == TZP_XSHLEVEL)
-                     ? TImage::TOONZ_RASTER
-                     : TImage::RASTER;  // and OVL_XSHLEVEL level types
+                 ? TImage::TOONZ_RASTER
+                 : TImage::RASTER;  // and OVL_XSHLEVEL level types
     }
 
     TXsheet *xsh = getCurrentXsheet()->getXsheet();
@@ -316,9 +288,9 @@ int TApp::getCurrentImageType() {
       int r0, r1;
       xsh->getCellRange(col, r0, r1);
       if (0 <= r0 && r0 <= r1) {
-        /*-- Columnに格納されている一番上のLevelのTypeに合わせる--*/
+        // Use the type of the topmost level stored in the column
         cell = xsh->getCell(r0, col);
-      } else /*-- Columnが空の場合 --*/
+      } else /* Column is empty */
       {
         return TImage::NONE;
         /*
@@ -363,6 +335,8 @@ void TApp::updateXshLevel() {
     int frame       = m_currentFrame->getFrame();
     int column      = m_currentColumn->getColumnIndex();
     TXsheet *xsheet = m_currentXsheet->getXsheet();
+    if (!xsheet) return;
+    TXshColumn *xshColumn = column >= 0 ? xsheet->getColumn(column) : nullptr;
 
     // sound column case
     if (xsheet->getColumn(column) &&
@@ -378,41 +352,73 @@ void TApp::updateXshLevel() {
       TXshCell cell = xsheet->getCell(frame, column);
       xl            = cell.m_level.getPointer();
 
-      // Se sono su una cella vuota successiva a celle di un certo livello
-      // prendo questo come livello corrente.
+      // If the current cell is empty but there is a level in the previous cell
+      // of the same column, take that as the current level.
       if (!xl && frame > 0) {
         TXshCell cell = xsheet->getCell(frame - 1, column);
         xl            = cell.m_level.getPointer();
       }
     }
 
+    TPalette *currentPalette =
+        m_paletteController->getCurrentPalette()->getPalette();
+    const bool editingCleanup =
+        currentPalette && currentPalette->isCleanupPalette();
     m_currentLevel->setLevel(xl);
 
     // level could be the same, but palette could have changed
     if (xl && xl->getSimpleLevel()) {
-      TPalette *currentPalette =
-          m_paletteController->getCurrentPalette()->getPalette();
       int styleIndex =
           m_paletteController->getCurrentLevelPalette()->getStyleIndex();
 
       m_paletteController->getCurrentLevelPalette()->setPalette(
           xl->getSimpleLevel()->getPalette(), styleIndex);
 
-      // Se il nuovo livello selezionato e' un ovl,
-      // la paletta corrente e' una cleanup palette
-      //  => setto come handle corrente quello della paletta di cleanup.
-
-      if (xl->getType() == OVL_XSHLEVEL && currentPalette &&
-          currentPalette->isCleanupPalette())
-
+      // If the new selected level is an OVL and the current palette is a
+      // cleanup palette, then set the current handle to the cleanup palette.
+      if (xl->getType() == OVL_XSHLEVEL && editingCleanup)
         m_paletteController->editCleanupPalette();
     } else if (xl && xl->getPaletteLevel()) {
       int styleIndex =
           m_paletteController->getCurrentLevelPalette()->getStyleIndex();
       m_paletteController->getCurrentLevelPalette()->setPalette(
           xl->getPaletteLevel()->getPalette(), styleIndex);
-    } else
-      m_paletteController->getCurrentLevelPalette()->setPalette(0);
+    } else {
+      TPalette *rasterPalette  = nullptr;
+      Preferences *preferences = Preferences::instance();
+      if (!xl && column >= 0 && frame >= 0 &&
+          preferences->isAutoCreateEnabled() &&
+          (!xshColumn ||
+           (xshColumn->getLevelColumn() && !xshColumn->isLocked() &&
+            xshColumn->isCamstandVisible()))) {
+        if (xsheet->isColumnEmpty(column)) {
+          if (preferences->getDefLevelType() == OVL_XSHLEVEL)
+            rasterPalette = FullColorPalette::instance()->getPalette(
+                m_currentScene->getScene());
+        } else {
+          // Match the level chosen by touchImage without changing the current
+          // level or enabling level commands on an empty cell.
+          int r0, r1;
+          xsheet->getCellRange(column, r0, r1);
+          int previous = std::min(frame - 1, r1);
+          int next     = std::max(frame + 1, r0);
+          while (previous >= r0 && xsheet->getCell(previous, column).isEmpty())
+            --previous;
+          while (next <= r1 && xsheet->getCell(next, column).isEmpty()) ++next;
+          TXshSimpleLevel *rasterLevel =
+              previous >= r0
+                  ? xsheet->getCell(previous, column).getSimpleLevel()
+              : next <= r1 ? xsheet->getCell(next, column).getSimpleLevel()
+                           : nullptr;
+          if (rasterLevel && rasterLevel->getType() == OVL_XSHLEVEL &&
+              !rasterLevel->isSubsequence() && !rasterLevel->isReadOnly())
+            rasterPalette = rasterLevel->getPalette();
+        }
+      }
+      m_paletteController->getCurrentLevelPalette()->setPalette(rasterPalette);
+      if (rasterPalette && editingCleanup)
+        m_paletteController->editCleanupPalette();
+    }
   }
 }
 
@@ -456,12 +462,36 @@ void TApp::onSceneSwitched() {
 
   // update current tool
   m_currentTool->onImageChanged((TImage::Type)getCurrentImageType());
+  updateCanvasSizeCommandEnabled();
 }
 
 //-----------------------------------------------------------------------------
 
 void TApp::onImageChanged() {
-  m_currentTool->onImageChanged((TImage::Type)getCurrentImageType());
+  // Assistant level auto-switch (only when "Auto-Switch & Keep" is enabled):
+  // switch to Edit Assistants tool when selecting an Assistant level, restore
+  // previous tool when leaving. Must run before ToolHandle::onImageChanged.
+  int imageType = getCurrentImageType();
+  bool isAssistantLevel = (imageType == TImage::META);
+  QString currentToolName = m_currentTool->getRequestedToolName();
+
+  if (isEditAssistantsAutoSwitchAndKeepEnabled()) {
+    if (isAssistantLevel) {
+      if (currentToolName != T_EditAssistants) {
+        m_toolBeforeAssistantLevel = currentToolName;
+        m_currentTool->setTool(T_EditAssistants);
+      }
+    } else {
+      if (!m_toolBeforeAssistantLevel.isEmpty() &&
+          currentToolName == T_EditAssistants) {
+        QString toolToRestore = m_toolBeforeAssistantLevel;
+        m_toolBeforeAssistantLevel.clear();
+        m_currentTool->setTool(toolToRestore);
+      }
+    }
+  }
+
+  m_currentTool->onImageChanged((TImage::Type)imageType);
 }
 
 //-----------------------------------------------------------------------------
@@ -535,18 +565,18 @@ void TApp::onColumnIndexSwitched() {
 //-----------------------------------------------------------------------------
 
 void TApp::onXshLevelSwitched(TXshLevel *) {
+  updateCanvasSizeCommandEnabled();
   TXshLevel *level = m_currentLevel->getLevel();
   if (level) {
     TXshSimpleLevel *simpleLevel = level->getSimpleLevel();
 
-    // Devo aggiornare la paletta corrente
+    // Update the current palette
     if (simpleLevel) {
       m_paletteController->getCurrentLevelPalette()->setPalette(
           simpleLevel->getPalette());
 
-      // Se il nuovo livello selezionato e' un ovl,
-      // la paletta corrente e' una cleanup palette
-      //  => setto come handle corrente quello della paletta di cleanup.
+      // If the new selected level is an OVL and the current palette is a
+      // cleanup palette, then set the current handle to the cleanup palette.
       TPalette *currentPalette =
           m_paletteController->getCurrentPalette()->getPalette();
 
@@ -619,39 +649,42 @@ void TApp::onPaletteChanged() { m_currentScene->setDirtyFlag(true); }
 
 void TApp::onLevelColorStyleSwitched() {
   TXshLevel *sl = m_currentLevel->getLevel();
-  if (!sl || (sl->getType() != TZP_XSHLEVEL && sl->getType() != PLI_XSHLEVEL))
-    return;
+  if (!sl) return;
 
   TPaletteHandle *ph = m_paletteController->getCurrentLevelPalette();
   assert(ph);
 
-  if (ToonzCheck::instance()->setColorIndex(ph->getStyleIndex())) {
-    ToonzCheck *tc = ToonzCheck::instance();
-    int mask       = tc->getChecks();
+  ToonzCheck *tc = ToonzCheck::instance();
+  int styleIndex = ph->getStyleIndex();
 
-    if (mask & ToonzCheck::eInk || mask & ToonzCheck::ePaint) {
-      IconGenerator::Settings s;
-      s.m_blackBgCheck      = mask & ToonzCheck::eBlackBg;
-      s.m_transparencyCheck = mask & ToonzCheck::eTransparency;
-      s.m_inksOnly          = mask & ToonzCheck::eInksOnly;
-      s.m_inkIndex   = mask & ToonzCheck::eInk ? tc->getColorIndex() : -1;
-      s.m_paintIndex = mask & ToonzCheck::ePaint ? tc->getColorIndex() : -1;
+  // Sync the current style index
+  tc->setColorIndex(styleIndex);
 
-      IconGenerator::instance()->setSettings(s);
+  int mask = tc->getChecks();
 
-      if (sl->getType() == PLI_XSHLEVEL) {
-        std::vector<TFrameId> fids;
-        sl->getFids(fids);
-        for (int i = 0; i < (int)fids.size(); i++)
-          IconGenerator::instance()->invalidate(sl, fids[i]);
-      }
+  // Update IconGenerator settings.
+  // We do this every time to ensure that if checks are turned off (mask == 0),
+  // the generator knows to stop highlighting.
+  IconGenerator::Settings s;
+  s.m_blackBgCheck      = mask & ToonzCheck::eBlackBg;
+  s.m_transparencyCheck = mask & ToonzCheck::eTransparency;
+  s.m_inksOnly          = mask & ToonzCheck::eInksOnly;
+  s.m_inkIndex          = (mask & ToonzCheck::eInk) ? styleIndex : -1;
+  s.m_paintIndex        = (mask & ToonzCheck::ePaint) ? styleIndex : -1;
 
-      m_currentLevel->notifyLevelViewChange();
-    }
+  IconGenerator::instance()->setSettings(s);
 
-    /*-- 表示オプションが切り替わっただけなので、DirtyFlagを立てない --*/
-    m_currentScene->notifySceneChanged(false);
-  }
+  // To fix the "frozen icons" in other columns, we must invalidate the global
+  // icon cache. This ensures that all visible levels in the filmstrip/xsheet
+  // reflect the current check state.
+  invalidateIcons();
+
+  // Notify the system that level views need refreshing
+  m_currentLevel->notifyLevelViewChange();
+
+  // Notify scene change for UI consistency (e.g., Scene Cast) without setting
+  // the dirty flag
+  m_currentScene->notifySceneChanged(false);
 }
 
 //-----------------------------------------------------------------------------
@@ -670,7 +703,7 @@ static void notifyPaletteChanged(TXshSimpleLevel *simpleLevel) {
   // update related panels.
   if (simpleLevel->getType() == TZP_XSHLEVEL)
     IconGenerator::instance()->notifyIconGenerated();
-  else {  // ToonzVecor needs to re-generate icons since it includes colors in
+  else {  // ToonzVector needs to re-generate icons since it includes colors in
           // the cache.
     for (int i = 0; i < (int)fids.size(); i++)
       IconGenerator::instance()->invalidate(simpleLevel, fids[i]);
@@ -715,8 +748,8 @@ void TApp::autosave() {
 
   if (m_saveInProgress) return;
 
-  //DVGui::ProgressDialog pb(
-  //    "Autosaving scene..." + toQString(scene->getScenePath()), 0, 0, 1);
+  // DVGui::ProgressDialog pb(
+  //     "Autosaving scene..." + toQString(scene->getScenePath()), 0, 0, 1);
 
   Preferences *pref = Preferences::instance();
   if (pref->isAutosaveSceneEnabled() && pref->isAutosaveOtherFilesEnabled()) {
@@ -724,9 +757,8 @@ void TApp::autosave() {
   } else if (pref->isAutosaveSceneEnabled()) {
     IoCmd::saveScene(IoCmd::AUTO_SAVE);
   } else if (pref->isAutosaveOtherFilesEnabled()) {
-    IoCmd::saveNonSceneFiles();
+    IoCmd::saveNonSceneFiles(IoCmd::AUTO_SAVE);
   }
-
 }
 
 //-----------------------------------------------------------------------------
@@ -760,14 +792,15 @@ bool TApp::eventFilter(QObject *watched, QEvent *e) {
   } else if (e->type() == QEvent::TabletLeaveProximity) {
     // if the user is painting very quickly with the pen, a number of events
     // could be still in the queue
-    // the must be processed as tabled events (not mouse events)
+    // they must be processed as tablet events (not mouse events)
     if (m_isPenCloseToTablet) qApp->processEvents();
 
     m_isPenCloseToTablet = false;
     emit tabletLeft();
   }
 
-  return false;  // I want just peek at the event. It must be processed anyway.
+  return false;  // I just want to peek at the event. It must be processed
+                 // anyway.
 }
 
 //-----------------------------------------------------------------------------
@@ -778,4 +811,3 @@ QString TApp::getCurrentRoomName() const {
 
   return currentRoom->getName();
 }
-

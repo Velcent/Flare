@@ -38,11 +38,9 @@
 #define MI_ExportAllLevels "MI_ExportAllLevels"
 #define MI_SavePaletteAs "MI_SavePaletteAs"
 #define MI_OverwritePalette "MI_OverwritePalette"
+#define MI_SaveAsDefaultRasterPalette "MI_SaveAsDefaultRasterPalette"
 #define MI_LoadColorModel "MI_LoadColorModel"
 #define MI_ImportMagpieFile "MI_ImportMagpieFile"
-#define MI_ImportFlashVector "MI_ImportFlashVector"
-#define MI_SwfRoundTrip "MI_SwfRoundTrip"
-#define MI_ImportMohoProject "MI_ImportMohoProject"
 #define MI_NewNoteLevel "MI_NewNoteLevel"
 #define MI_RemoveEmptyColumns "MI_RemoveEmptyColumns"
 #define MI_NewProject "MI_NewProject"
@@ -132,7 +130,6 @@
 #define MI_SaveSubxsheetAs "MI_SaveSubxsheetAs"
 #define MI_Resequence "MI_Resequence"
 #define MI_CloneChild "MI_CloneChild"
-#define MI_IncrementInstances "MI_IncrementInstances"
 #define MI_ApplyMatchLines "MI_ApplyMatchLines"
 #define MI_MergeCmapped "MI_MergeCmapped"
 #define MI_MergeColumns "MI_MergeColumns"
@@ -184,10 +181,12 @@
 #define MI_ViewTable "MI_ViewTable"
 #define MI_FieldGuide "MI_FieldGuide"
 #define MI_RasterizePli "MI_RasterizePli"
-#define MI_LayoutGuide "MI_LayoutGuide"
+#define MI_SafeArea "MI_SafeArea"
+#define MI_CenterCutGuide "MI_CenterCutGuide"
 #define MI_ViewColorcard "MI_ViewColorcard"
 #define MI_ViewGuide "MI_ViewGuide"
 #define MI_ViewRuler "MI_ViewRuler"
+#define MI_ToggleColorCalibration "MI_ToggleColorCalibration"
 #define MI_TCheck "MI_TCheck"
 #define MI_ICheck "MI_ICheck"
 #define MI_Ink1Check "MI_Ink1Check"
@@ -338,6 +337,11 @@
 
 #define MI_OpenComboViewer "MI_OpenComboViewer"
 #define MI_OpenHistoryPanel "MI_OpenHistoryPanel"
+#define MI_OpenBrushPresetPanel "MI_OpenBrushPresetPanel"
+#define MI_AddBrushPreset "MI_AddBrushPreset"
+#define MI_RemoveBrushPreset "MI_RemoveBrushPreset"
+#define MI_RemoveBrushPresetByName "MI_RemoveBrushPresetByName"
+#define MI_OpenToolPropertiesPanel "MI_OpenToolPropertiesPanel"
 #define MI_ReplaceParentDirectory "MI_ReplaceParentDirectory"
 #define MI_Reframe1 "MI_Reframe1"
 #define MI_Reframe2 "MI_Reframe2"
@@ -357,6 +361,18 @@
 #define MI_SelectionRectangular "MI_SelectionRectangular"
 #define MI_SelectionFreehand "MI_SelectionFreehand"
 #define MI_SelectionPolyline "MI_SelectionPolyline"
+
+#define MI_AssistantNextType "MI_AssistantNextType"
+#define MI_AssistantLine "MI_AssistantLine"
+#define MI_AssistantEllipse "MI_AssistantEllipse"
+#define MI_AssistantPerspective "MI_AssistantPerspective"
+#define MI_AssistantVanishingPoint "MI_AssistantVanishingPoint"
+#define MI_AssistantFisheye "MI_AssistantFisheye"
+#define MI_AssistantReplicatorStar "MI_AssistantReplicatorStar"
+#define MI_AssistantReplicatorMirror "MI_AssistantReplicatorMirror"
+#define MI_AssistantReplicatorJitter "MI_AssistantReplicatorJitter"
+#define MI_AssistantReplicatorGrid "MI_AssistantReplicatorGrid"
+#define MI_AssistantReplicatorAffine "MI_AssistantReplicatorAffine"
 
 #define MI_GeometricNextShape "MI_GeometricNextShape"
 #define MI_GeometricRectangle "MI_GeometricRectangle"
@@ -433,8 +449,6 @@
 #define MI_PreviewFx "MI_PreviewFx"
 
 #define MI_About "MI_About"
-#define MI_CheckForUpdates "MI_CheckForUpdates"
-#define MI_FlashGuide "MI_FlashGuide"
 #define MI_StartupPopup "MI_StartupPopup"
 #define MI_PencilTest "MI_PencilTest"
 #define MI_AudioRecording "MI_AudioRecording"
@@ -461,9 +475,8 @@
 
 #define MI_OpenOnlineManual "MI_OpenOnlineManual"
 #define MI_OpenWhatsNew "MI_OpenWhatsNew"
+#define MI_Quicklink "MI_Quicklink"
 #define MI_OpenCommunityForum "MI_OpenCommunityForum"
-#define MI_OpenDiscord "MI_OpenDiscord"
-#define MI_OpenWebsite "MI_OpenWebsite"
 #define MI_OpenReportABug "MI_OpenReportABug"
 
 #define MI_ClearCacheFolder "MI_ClearCacheFolder"
@@ -487,11 +500,9 @@
 #define MI_ExportSXF "MI_ExportSXF"
 #define MI_ExportOCA "MI_ExportOCA"
 #define MI_ImportOCA "MI_ImportOCA"
-#define MI_ImportFlash "MI_ImportFlash"
 #define MI_ExportTvpJson "MI_ExportTvpJson"
 #define MI_ExportXsheetPDF "MI_ExportXsheetPDF"
 #define MI_ExportCameraTrack "MI_ExportCameraTrack"
-#define MI_ExportFlash "MI_ExportFlash"
 
 // mark id is added for each actual command (i.g. MI_SetCellMark1)
 #define MI_SetCellMark "MI_SetCellMark"
@@ -512,6 +523,6 @@
 #define MI_ClearTags "MI_ClearTags"
 
 #define MI_OpenLocator "MI_OpenLocator"
-#define MI_OpenFlashInstancePanel "MI_OpenFlashInstancePanel"
-#endif
+#define MI_OpenAlignmentPanel "MI_OpenAlignmentPanel"
 
+#endif

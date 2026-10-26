@@ -1,3 +1,5 @@
+
+
 #include "viewerdraw.h"
 #include "tapp.h"
 #include "flare/txsheethandle.h"
@@ -26,12 +28,89 @@
 
 #include "tenv.h"
 #include "tsystem.h"
-#include "flare/txshsimplelevel.h"
-#include "flare/stagevisitor.h"
-#include "flare/imagepainter.h"
-#include "tgeometry.h"
+#include "tfilepath_io.h"
+#include "tstream.h"
 
 #include "subcameramanager.h"
+
+#include <QColor>
+#include <QSettings>
+
+TEnv::StringVar EnvSafeAreaName("SafeAreaName", "PR_safe");
+
+/* TODO, move to include */
+void getSafeAreaSizeList(QList<QList<double>> &_sizeList);
+
+//=============================================================================
+//=============================================================================
+// SafeAreaData
+//-----------------------------------------------------------------------------
+
+void getSafeAreaSizeList(QList<QList<double>> &_sizeList) {
+  static QList<QList<double>> sizeList;
+
+  static TFilePath projectPath;
+  static QString safeAreaName;
+
+  TFilePath fp                = TEnv::getConfigDir();
+  QString currentSafeAreaName = QString::fromStdString(EnvSafeAreaName);
+
+  if (fp != projectPath || currentSafeAreaName != safeAreaName) {
+    sizeList.clear();
+
+    projectPath  = fp;
+    safeAreaName = currentSafeAreaName;
+
+    std::string safeAreaFileName = "safearea.ini";
+
+    while (!TFileStatus(fp + safeAreaFileName).doesExist() && !fp.isRoot() &&
+           fp.getParentDir() != TFilePath())
+      fp = fp.getParentDir();
+
+    fp = fp + safeAreaFileName;
+
+    if (TFileStatus(fp).doesExist()) {
+      QSettings settings(toQString(fp), QSettings::IniFormat);
+
+      // find the current safearea name from the list
+      QStringList groups = settings.childGroups();
+      for (int g = 0; g < groups.size(); g++) {
+        settings.beginGroup(groups.at(g));
+        // If found, get the safe area setting values
+        if (safeAreaName == settings.value("name", "").toString()) {
+          // enter area group
+          settings.beginGroup("area");
+
+          QStringList keys = settings.childKeys();
+          for (int i = 0; i < keys.size(); i++) {
+            QList<QVariant> tmp =
+                settings.value(keys.at(i), QList<QVariant>()).toList();
+            QList<double> val_list;
+            for (int j = 0; j < tmp.size(); j++)
+              val_list.push_back(tmp.at(j).toDouble());
+            sizeList.push_back(val_list);
+          }
+
+          // close area group
+          settings.endGroup();
+
+          settings.endGroup();
+          break;
+        }
+        settings.endGroup();
+      }
+      // If not found, then put some temporal values..
+      if (sizeList.isEmpty()) {
+        QList<double> tmpList0, tmpList1;
+        tmpList0 << 80.0 << 80.0;
+        tmpList1 << 90.0 << 90.0;
+        sizeList << tmpList0 << tmpList1;
+      }
+    }
+  }
+
+  _sizeList = sizeList;
+}
 
 //-----------------------------------------------------------------------------
 namespace {
@@ -75,10 +154,9 @@ T3DPointD make3dPoint(const TPointD &p, double z) {
 void getCameraSection(T3DPointD points[4], int row, double z)
 {
   TXsheet *xsh = TApp::instance()->getCurrentXsheet()->getXsheet();
-  TStageObjectId cameraId =
-xsh->getStageObjectTree()->getCurrentCameraId(); double camZ =
-xsh->getZ(cameraId, row); TAffine camAff = xsh->getPlacement(cameraId,
-row);
+  TStageObjectId cameraId = xsh->getStageObjectTree()->getCurrentCameraId();
+  double camZ = xsh->getZ(cameraId, row);
+  TAffine camAff = xsh->getPlacement(cameraId, row);
 
   TRectD cameraRect =
     TApp::instance()->getCurrentScene()->getScene()->getCurrentCamera()->getStageRect();
@@ -109,7 +187,7 @@ row);
 
 //-----------------------------------------------------------------------------
 /*! when camera view mode, draw the mask plane outside of the camera box
- */
+*/
 void ViewerDraw::drawCameraMask(SceneViewer *viewer) {
   TXsheet *xsh = TApp::instance()->getCurrentXsheet()->getXsheet();
 
@@ -131,8 +209,8 @@ void ViewerDraw::drawCameraMask(SceneViewer *viewer) {
       modelViewAff.inv() * TPointD(clipRect.x1, clipRect.y1),
       modelViewAff.inv() * TPointD(clipRect.x0, clipRect.y1)};
 
-  // bounds: nel sistema di riferimento "corrente" bounds e' il piu'
-  // piccolo rettangolo che copre completamente tutto il viewer
+  // bounds: nel sistema di riferimento "corrente" bounds e' il piu' piccolo
+  // rettangolo che copre completamente tutto il viewer
   TRectD bounds;
   bounds.x0 = bounds.x1 = clipCorner[0].x;
   bounds.y0 = bounds.y1 = clipCorner[0].y;
@@ -181,8 +259,8 @@ void ViewerDraw::drawCameraMask(SceneViewer *viewer) {
 
 void ViewerDraw::drawGridAndGuides(SceneViewer *viewer, double sc, Ruler *vr,
                                    Ruler *hr, bool gridEnabled) {
-  int vGuideCount = 0;
-  int hGuideCount = 0;
+  int vGuideCount     = 0;
+  int hGuideCount     = 0;
   if (vr) vGuideCount = vr->getGuideCount();
   if (hr) hGuideCount = hr->getGuideCount();
 
@@ -289,14 +367,16 @@ void ViewerDraw::drawGridAndGuides(SceneViewer *viewer, double sc, Ruler *vr,
 
 //-----------------------------------------------------------------------------
 
-void ViewerDraw::drawColorcard(UCHAR channel, TRectD rect) {
+void ViewerDraw::drawColorcard(UCHAR channel) {
   ToonzScene *scene = TApp::instance()->getCurrentScene()->getScene();
+  TRectD rect       = getCameraRect();
+
   TPixel color = (ToonzCheck::instance()->getChecks() & ToonzCheck::eBlackBg)
                      ? TPixel::Black
                      : scene->getProperties()->getBgColor();
   if (channel == 0)
-    color.m = 255;  // fondamentale: senno' non si vedono i fill con le
-                    // texture in camera stand!
+    color.m = 255;  // fondamentale: senno' non si vedono i fill con le texture
+                    // in camera stand!
   else {
     if (channel == TRop::MChan) {
       switch (channel) {
@@ -329,7 +409,7 @@ void ViewerDraw::drawColorcard(UCHAR channel, TRectD rect) {
 
 void ViewerDraw::draw3DCamera(unsigned long flags, double zmin, double phi) {
   bool cameraRef = 0 != (flags & ViewerDraw::CAMERA_REFERENCE);
-  bool frames    = 0 != (flags & ViewerDraw::LAYOUT);
+  bool safeArea  = 0 != (flags & ViewerDraw::SAFE_AREA);
 
   TApp *app               = TApp::instance();
   int frame               = app->getCurrentFrame()->getFrame();
@@ -344,7 +424,7 @@ void ViewerDraw::draw3DCamera(unsigned long flags, double zmin, double phi) {
 
   TPointD cameraCorners[4] = {camAff * rect.getP00(), camAff * rect.getP10(),
                               camAff * rect.getP11(), camAff * rect.getP01()};
-  TPointD cameraCenter     = 0.5 * (cameraCorners[0] + cameraCorners[2]);
+  TPointD cameraCenter = 0.5 * (cameraCorners[0] + cameraCorners[2]);
 
   T3DPointD cage[4][4];
   std::vector<double> cageZ;
@@ -379,8 +459,8 @@ void ViewerDraw::draw3DCamera(unsigned long flags, double zmin, double phi) {
   }
   glEnable(GL_LINE_STIPPLE);
 
-  double yBigBox = -Stage::bigBoxSize[1];
-  double xBigBox = Stage::bigBoxSize[0];
+  double yBigBox       = -Stage::bigBoxSize[1];
+  double xBigBox       = Stage::bigBoxSize[0];
   if (phi < 0) xBigBox = -xBigBox;
 
   for (int i = 0; i < m; i++) {
@@ -462,75 +542,14 @@ TRectD ViewerDraw::getCameraRect() {
 
 //-----------------------------------------------------------------------------
 
-void ViewerDraw::drawLayoutGuide(SceneViewer *viewer, bool levelEditing) {
-  TXshSimpleLevelP sl = nullptr;
-  QList<QList<double>> sizeList;
-  TPointD offset;
-  getLayoutPreset(sizeList, sl, offset);
-
-  if (sl) {
-    bool isVector = sl->getType() == TXshLevelType::PLI_XSHLEVEL;
-    ImagePainter::VisualSettings vs = viewer->visualSettings();
-
-    TDimension viewerSize(viewer->width(), viewer->height());
-
-    TRect clipRect(0, 0, viewer->width(), viewer->height());
-    int currentFrame = TApp::instance()->getCurrentFrame()->getFrame();
-    TPointD camDpi   = getCameraDpi();
-    TAffine finalAff;
-    TAffine cameraAff =
-        levelEditing
-            ? TAffine()
-            : TApp::instance()->getCurrentXsheet()->getXsheet()->getCameraAff(
-                  currentFrame);
-    if (!isVector) {
-      TAffine offsetAff = levelEditing
-                              ? TAffine()
-                              : TTranslation(offset.x / camDpi.x * Stage::inch,
-                                             offset.y / camDpi.y * Stage::inch);
-      TAffine viewerAff = viewer->getViewMatrix();
-      finalAff          = viewerAff * cameraAff * offsetAff;
-    } else {
-      TAffine viewerAff = TXshSimpleLevel::m_rasterizePli || levelEditing
-                              ? viewer->getViewMatrix()
-                              : TAffine();
-      TAffine offsetAff =
-          TTranslation(offset.x / Stage::standardDpi * Stage::inch,
-                       offset.y / Stage::standardDpi * Stage::inch);
-
-      finalAff = viewerAff * cameraAff * offsetAff;
-    }
-
-    Stage::RasterPainter painter(viewerSize, finalAff, clipRect, vs, false);
-
-    Stage::Player player;
-    player.m_sl  = sl.getPointer();
-    player.m_fid = sl->getFirstFid();
-
-    if (isVector)
-      player.m_xsh = TApp::instance()->getCurrentXsheet()->getXsheet();
-
-    player.m_dpiAff = TScale(Stage::inch / camDpi.x, Stage::inch / camDpi.y);
-
-    painter.onImage(player);
-    painter.flushRasterImages();
-  }
-
-  if (sizeList.isEmpty()) return;
-
-  TRectD rect           = getCameraRect();
-  bool glMatrixModified = false;
-
-  if (levelEditing) {
-    glPushMatrix();
-    TAffine aff = viewer->getViewMatrix();
-    tglMultMatrix(aff);
-    glMatrixModified = true;
-  }
-
+void ViewerDraw::drawSafeArea() {
+  TRectD rect = getCameraRect();
   glColor3d(1.0, 0.0, 0.0);
   glLineStipple(1, 0xCCCC);
   glEnable(GL_LINE_STIPPLE);
+
+  QList<QList<double>> sizeList;
+  getSafeAreaSizeList(sizeList);
 
   double ux = 0.5 * rect.getLx();
   double uy = 0.5 * rect.getLy();
@@ -550,8 +569,18 @@ void ViewerDraw::drawLayoutGuide(SceneViewer *viewer, bool levelEditing) {
   }
 
   glDisable(GL_LINE_STIPPLE);
+}
 
-  if (glMatrixModified) glPopMatrix();
+//-----------------------------------------------------------------------------
+
+void ViewerDraw::drawCameraGuide(const TRectD &rect) {
+  if (rect.isEmpty()) return;
+  glPushAttrib(GL_CURRENT_BIT | GL_LINE_BIT | GL_ENABLE_BIT);
+  glColor3d(0.0, 0.8, 1.0);
+  glLineStipple(1, 0xF0F0);
+  glEnable(GL_LINE_STIPPLE);
+  tglDrawRect(rect);
+  glPopAttrib();
 }
 
 //-----------------------------------------------------------------------------
@@ -684,11 +713,11 @@ void ViewerDraw::drawFieldGuide() {
   TSceneProperties *sprop =
       TApp::instance()->getCurrentScene()->getScene()->getProperties();
 
-  int n = sprop->getFieldGuideSize();
+  int n        = sprop->getFieldGuideSize();
   if (n < 4) n = 4;
-  double ar = sprop->getFieldGuideAspectRatio();
-  double lx = 0.5 * n / f * Stage::inch;  // 320;
-  double ly = lx / ar;
+  double ar    = sprop->getFieldGuideAspectRatio();
+  double lx    = 0.5 * n / f * Stage::inch;  // 320;
+  double ly    = lx / ar;
   glPushMatrix();
   glScaled(f, f, 1);
   double ux = lx / n;
@@ -720,7 +749,7 @@ void ViewerDraw::drawFieldGuide() {
 
 //-----------------------------------------------------------------------------
 
-void ViewerDraw::drawDisk(int &tableDLId) {
+void ViewerDraw::drawDisk(int &tableDLId, const QColor &tableColor) {
   static TPixel32 currentBgColor;
 
   TPixel32 bgColor;
@@ -734,6 +763,7 @@ void ViewerDraw::drawDisk(int &tableDLId) {
     currentBgColor = bgColor;
     tableDLId      = createDiskDisplayList();
   }
+  glColor3ub(tableColor.red(), tableColor.green(), tableColor.blue());
   glCallList(tableDLId);
 }
 
@@ -754,7 +784,6 @@ unsigned int ViewerDraw::createDiskDisplayList() {
   }
   double r = 10 * Stage::inch;
   glNewList(id, GL_COMPILE);
-  glColor3d(.6, .65, .7);
   glBegin(GL_POLYGON);
   int i;
   int n = 120;
@@ -790,4 +819,3 @@ unsigned int ViewerDraw::createDiskDisplayList() {
   glEndList();
   return (id);
 }
-
